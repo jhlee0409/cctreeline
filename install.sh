@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# treeline installer — detects what it can, asks only what it must.
+# cctreeline installer — detects what it can, asks only what it must.
 #
 # Asks 3 things: (1) usage gauges [reads your Claude credentials], (2) the
 # worktree+PR line, (3) color/glyphs. Everything else (OS, date flavor,
@@ -14,11 +14,11 @@
 set -euo pipefail
 
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/treeline"
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/treeline"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cctreeline"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/cctreeline"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SETTINGS="$CLAUDE_DIR/settings.json"
-INSTALLED="$DATA_DIR/treeline.sh"
+INSTALLED="$DATA_DIR/cctreeline.sh"
 CONFIG_FILE="$CONFIG_DIR/config"
 
 NONINTERACTIVE=0
@@ -42,7 +42,7 @@ ask_yn() {
   case "$ans" in [Yy]*) return 0 ;; *) return 1 ;; esac
 }
 
-say "${bold}treeline installer${rst}"
+say "${bold}cctreeline installer${rst}"
 say "${dim}a Claude Code statusline for multi-worktree workflows${rst}"
 say ""
 
@@ -109,18 +109,18 @@ if ask_yn "Compact line 2 (ctx + 5h only, hide weekly/output-style)?" "n"; then 
 say ""
 say "${bold}Installing${rst}"
 mkdir -p "$CONFIG_DIR" "$DATA_DIR"
-cp "$SRC_DIR/treeline.sh" "$INSTALLED"; chmod +x "$INSTALLED"
+cp "$SRC_DIR/cctreeline.sh" "$INSTALLED"; chmod +x "$INSTALLED"
 ok "runtime → $INSTALLED"
 
 cat > "$CONFIG_FILE" <<EOF
-# treeline config — written by install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "install")
+# cctreeline config — written by install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "install")
 # Re-run install.sh or edit by hand. Values: see README.
-TREELINE_USAGE_GAUGES=$USAGE
-TREELINE_WORKTREE_LINE=$WTLINE
-TREELINE_COLOR=$COLOR
-TREELINE_GLYPHS=$GLYPHS
-TREELINE_DENSITY=$DENSITY
-TREELINE_REUSE_HUD_CACHE=auto
+CCTREELINE_USAGE_GAUGES=$USAGE
+CCTREELINE_WORKTREE_LINE=$WTLINE
+CCTREELINE_COLOR=$COLOR
+CCTREELINE_GLYPHS=$GLYPHS
+CCTREELINE_DENSITY=$DENSITY
+CCTREELINE_REUSE_HUD_CACHE=auto
 EOF
 ok "config  → $CONFIG_FILE"
 
@@ -131,7 +131,7 @@ if [ -f "$SETTINGS" ]; then
   # refuse to touch a settings.json we can't parse (don't risk truncating it)
   if ! jq empty "$SETTINGS" >/dev/null 2>&1; then
     err "$SETTINGS is not valid JSON — leaving it untouched. Fix it, then re-run."
-    say "    To enable treeline by hand, add:"
+    say "    To enable cctreeline by hand, add:"
     say "    \"statusLine\": { \"type\": \"command\", \"command\": \"$NEW_CMD\" }"
     exit 1
   fi
@@ -139,13 +139,13 @@ if [ -f "$SETTINGS" ]; then
   if [ -n "$EXISTING" ] && [ "$EXISTING" != "$NEW_CMD" ]; then
     warn "An existing statusLine is configured:"
     say  "    $EXISTING"
-    if ! ask_yn "Replace it with treeline?" "n"; then
-      warn "Left settings.json untouched. To enable treeline later, set:"
+    if ! ask_yn "Replace it with cctreeline?" "n"; then
+      warn "Left settings.json untouched. To enable cctreeline later, set:"
       say  "    \"statusLine\": { \"type\": \"command\", \"command\": \"$NEW_CMD\" }"
       say ""; ok "Done (statusline not wired)."; exit 0
     fi
   fi
-  BACKUP="$SETTINGS.treeline-bak.$(date +%s 2>/dev/null || echo bak)"
+  BACKUP="$SETTINGS.cctreeline-bak.$(date +%s 2>/dev/null || echo bak)"
   cp "$SETTINGS" "$BACKUP"; ok "backed up settings.json → $BACKUP"
   # tmp in the destination dir → mv is a same-filesystem atomic rename
   tmp=$(mktemp "$CLAUDE_DIR/settings.json.XXXXXX"); trap 'rm -f "$tmp"' EXIT
@@ -161,5 +161,5 @@ fi
 ok "wired into $SETTINGS"
 
 say ""
-ok "${bold}treeline installed.${rst} Open a new Claude Code session to see it."
+ok "${bold}cctreeline installed.${rst} Open a new Claude Code session to see it."
 [ "$USAGE" = "0" ] && say "${dim}Usage gauges are off. Re-run install.sh after logging into Claude to enable.${rst}"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# treeline — a Claude Code statusline for people who run multiple git worktrees.
+# cctreeline — a Claude Code statusline for people who run multiple git worktrees.
 #
 # Three lines:
 #   1. duration · path · branch + worktree badge + dirty marks · model · session id
@@ -10,13 +10,13 @@
 # Cross-platform: auto-detects GNU/BSD date+stat and the platform credential store.
 #
 # Usage (Claude Code settings.json):
-#   { "statusLine": { "type": "command", "command": "bash /path/to/treeline.sh" } }
+#   { "statusLine": { "type": "command", "command": "bash /path/to/cctreeline.sh" } }
 #
 # Subcommands (used internally for async cache refresh; you don't call these):
-#   treeline.sh --refresh-usage          refresh the 5h/weekly usage cache
-#   treeline.sh --refresh-worktrees CWD  refresh the worktree+PR cache
+#   cctreeline.sh --refresh-usage          refresh the 5h/weekly usage cache
+#   cctreeline.sh --refresh-worktrees CWD  refresh the worktree+PR cache
 #
-# Config: ${XDG_CONFIG_HOME:-~/.config}/treeline/config  (written by install.sh)
+# Config: ${XDG_CONFIG_HOME:-~/.config}/cctreeline/config  (written by install.sh)
 
 set -o pipefail
 
@@ -25,20 +25,20 @@ SELF=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")
 [ -f "$SELF" ] || SELF="$0"
 
 # ── XDG paths ───────────────────────────────────────────────────
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/treeline"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cctreeline"
 CONFIG_FILE="$CONFIG_DIR/config"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/treeline"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/cctreeline"
 USAGE_CACHE="$CACHE_DIR/usage.json"
 WT_CACHE="$CACHE_DIR/worktrees.json"
 mkdir -p "$CACHE_DIR" 2>/dev/null
 
 # ── config defaults (overridden by CONFIG_FILE) ─────────────────
-TREELINE_USAGE_GAUGES=1       # read Claude creds + show 5h/weekly gauges
-TREELINE_WORKTREE_LINE=auto   # line 3 worktree-PR view: 1 | 0 | auto
-TREELINE_COLOR=auto           # auto | 256 | none
-TREELINE_GLYPHS=unicode       # unicode | ascii
-TREELINE_DENSITY=full         # full | compact
-TREELINE_REUSE_HUD_CACHE=auto # reuse claude-hud's usage cache if present
+CCTREELINE_USAGE_GAUGES=1       # read Claude creds + show 5h/weekly gauges
+CCTREELINE_WORKTREE_LINE=auto   # line 3 worktree-PR view: 1 | 0 | auto
+CCTREELINE_COLOR=auto           # auto | 256 | none
+CCTREELINE_GLYPHS=unicode       # unicode | ascii
+CCTREELINE_DENSITY=full         # full | compact
+CCTREELINE_REUSE_HUD_CACHE=auto # reuse claude-hud's usage cache if present
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 
@@ -117,7 +117,7 @@ refresh_usage() {
   resp=$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
     | curl -sS --max-time 5 -K - \
       -H "anthropic-beta: oauth-2025-04-20" \
-      -H "User-Agent: treeline/0.1" \
+      -H "User-Agent: cctreeline/0.1" \
       "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || return 0
   [ -z "$resp" ] && return 0
 
@@ -234,7 +234,7 @@ input=$(cat)
 
 # ── color setup ─────────────────────────────────────────────────
 COLOR_ON=1
-case "$TREELINE_COLOR" in
+case "$CCTREELINE_COLOR" in
   none) COLOR_ON=0 ;;
   256)  COLOR_ON=1 ;;
   auto|*)
@@ -247,7 +247,7 @@ bld() { [ "$COLOR_ON" = "1" ] && printf '\033[1m'; }
 rst() { [ "$COLOR_ON" = "1" ] && printf '\033[0m'; }
 
 # ── glyph setup ─────────────────────────────────────────────────
-if [ "$TREELINE_GLYPHS" = "ascii" ]; then
+if [ "$CCTREELINE_GLYPHS" = "ascii" ]; then
   G_FILL="#"; G_EMPTY="."; G_MAIN="="; G_MOD="*"; G_AHEAD="^"
   G_CLEAN="ok"; G_SEP="|"; G_ELLIP="..."; G_WT="wt"
 else
@@ -378,11 +378,11 @@ fi
 
 # ── 5h / weekly from usage cache (optional, consent-gated) ──────
 block_pct=""; block_remain=""; week_pct=""; week_remain=""; week_scope="all"
-if [ "$TREELINE_USAGE_GAUGES" = "1" ]; then
-  # prefer treeline's own cache; optionally reuse claude-hud's if present
+if [ "$CCTREELINE_USAGE_GAUGES" = "1" ]; then
+  # prefer cctreeline's own cache; optionally reuse claude-hud's if present
   hud_cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/claude-hud/.usage-cache.json"
   active_cache="$USAGE_CACHE"
-  if [ "$TREELINE_REUSE_HUD_CACHE" != "0" ] && [ -f "$hud_cache" ]; then
+  if [ "$CCTREELINE_REUSE_HUD_CACHE" != "0" ] && [ -f "$hud_cache" ]; then
     [ ! -f "$USAGE_CACHE" ] && active_cache="$hud_cache"
     [ -f "$USAGE_CACHE" ] && [ "$(_file_mtime "$hud_cache")" -gt "$(_file_mtime "$USAGE_CACHE")" ] && active_cache="$hud_cache"
   fi
@@ -449,10 +449,10 @@ if [ -n "$ctx_pct" ]; then
 elif (( unknown_ctx )); then
   parts+=("$(c $CTX_C)ctx$(rst) $(c $DIM_C)──────────$(rst) $(c $DIM_C)?$(rst)")
 fi
-if [ "$TREELINE_DENSITY" = "full" ] && [ -n "$output_style" ] && [ "$output_style" != "default" ]; then
+if [ "$CCTREELINE_DENSITY" = "full" ] && [ -n "$output_style" ] && [ "$output_style" != "default" ]; then
   parts+=("$(c $WEEK_C)${output_style}$(rst)")
 fi
-if [ "$TREELINE_DENSITY" = "full" ] && [ -n "$week_pct" ]; then
+if [ "$CCTREELINE_DENSITY" = "full" ] && [ -n "$week_pct" ]; then
   wp_int=$(awk -v v="$week_pct" 'BEGIN{printf "%d", v+0.5}')
   if [ -n "$week_scope" ] && [ "$week_scope" != "all" ] && [ "$week_scope" != "null" ]; then
     week_lbl="$(c $WEEK_C)7d·${week_scope}$(rst)"; else week_lbl="$(c $WEEK_C)7d$(rst)"; fi
@@ -472,7 +472,7 @@ fi
 # ── compose line 3: worktree PRs, scoped to this session's edits ─
 line3=""
 wt_enabled=0
-case "$TREELINE_WORKTREE_LINE" in
+case "$CCTREELINE_WORKTREE_LINE" in
   1) wt_enabled=1 ;;
   0) wt_enabled=0 ;;
   auto) [ -n "$git_top" ] && wt_enabled=1 ;;
