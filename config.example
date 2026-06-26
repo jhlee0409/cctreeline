@@ -1,0 +1,24 @@
+# treeline config — copy to ${XDG_CONFIG_HOME:-~/.config}/treeline/config
+# or let install.sh write it for you. Shell key=value; sourced by treeline.sh.
+
+# Read Claude credentials + show 5h/weekly rate-limit gauges (1 = on, 0 = off).
+# When on, treeline reads your OAuth token (macOS Keychain or
+# ~/.claude/.credentials.json) and calls api.anthropic.com in the background.
+TREELINE_USAGE_GAUGES=1
+
+# Line 3: per-worktree open-PR overview, scoped to worktrees edited this session.
+# 1 = always, 0 = never, auto = on whenever you're inside a git repo.
+TREELINE_WORKTREE_LINE=auto
+
+# auto = respect NO_COLOR / TERM=dumb, else 256-color. 256 = force. none = off.
+TREELINE_COLOR=auto
+
+# unicode (█ ░ ⎇ ⌂ ●) or ascii (# . * ^) for fonts without box-drawing glyphs.
+TREELINE_GLYPHS=unicode
+
+# full = ctx + weekly + 5h + output-style. compact = ctx + 5h only.
+TREELINE_DENSITY=full
+
+# auto = reuse claude-hud's usage cache if it exists (skips a duplicate API call).
+# 0 = always use treeline's own cache.
+TREELINE_REUSE_HUD_CACHE=auto

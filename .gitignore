@@ -1,0 +1,6 @@
+# local config / caches if anyone keeps them in-tree
+config
+*.local
+.cache/
+*.bak
+*.treeline-bak.*
