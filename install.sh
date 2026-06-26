@@ -22,7 +22,13 @@ INSTALLED="$DATA_DIR/cctreeline.sh"
 CONFIG_FILE="$CONFIG_DIR/config"
 
 NONINTERACTIVE=0
-[ "${1:-}" = "--defaults" ] && NONINTERACTIVE=1
+ENABLE_USAGE=""   # explicit opt-in for the credential-reading gauge under --defaults
+for arg in "$@"; do
+  case "$arg" in
+    --defaults)     NONINTERACTIVE=1 ;;
+    --enable-usage) ENABLE_USAGE=1 ;;
+  esac
+done
 [ -t 0 ] || NONINTERACTIVE=1   # no TTY → defaults
 
 bold=$(printf '\033[1m'); dim=$(printf '\033[2m'); grn=$(printf '\033[32m')
@@ -53,6 +59,9 @@ if command -v jq  >/dev/null 2>&1; then ok "jq    $(command -v jq)"; else err "j
 if command -v git >/dev/null 2>&1; then ok "git   $(command -v git)"; else err "git is REQUIRED"; MISSING=1; fi
 HAS_CURL=0; if command -v curl >/dev/null 2>&1; then ok "curl  $(command -v curl)"; HAS_CURL=1; else warn "curl missing — usage gauges (5h/weekly) will be unavailable"; fi
 HAS_GH=0;   if command -v gh   >/dev/null 2>&1; then ok "gh    $(command -v gh)";   HAS_GH=1;   else warn "gh missing — worktree line can't show PR numbers (worktrees still listed)"; fi
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then :; else
+  warn "no timeout/gtimeout (coreutils) — gh PR fetch will run unbounded (brew install coreutils on macOS)"
+fi
 [ "$MISSING" = "1" ] && { err "Missing required dependencies. Aborting."; exit 1; }
 
 # ── 2. platform (auto) ──────────────────────────────────────────
@@ -81,11 +90,15 @@ say ""
 say "${bold}Configuration${rst}"
 
 # Q1 — usage gauges (consent: reads creds + calls the Anthropic usage API)
+# Secure-by-default: under --defaults, stays OFF unless --enable-usage is passed,
+# so an unattended install never silently turns on credential reading.
 USAGE=0
 if [ "$CRED_OK" = "1" ] && [ "$HAS_CURL" = "1" ]; then
   say "${dim}Usage gauges show your 5-hour and weekly rate-limit %.${rst}"
   say "${dim}This reads your Claude credentials ($CRED_SRC) and calls api.anthropic.com.${rst}"
-  if ask_yn "Enable 5h / weekly usage gauges?" "y"; then USAGE=1; fi
+  q1_def="y"
+  [ "$NONINTERACTIVE" = "1" ] && [ -z "$ENABLE_USAGE" ] && q1_def="n"
+  if ask_yn "Enable 5h / weekly usage gauges?" "$q1_def"; then USAGE=1; fi
 else
   warn "Skipping usage gauges (need credentials + curl)."
 fi

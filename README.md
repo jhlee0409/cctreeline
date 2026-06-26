@@ -1,12 +1,16 @@
 # cctreeline
 
+[![License: MIT](https://img.shields.io/github/license/jhlee0409/cctreeline)](LICENSE)
+[![shellcheck](https://github.com/jhlee0409/cctreeline/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/jhlee0409/cctreeline/actions/workflows/shellcheck.yml)
+![GitHub stars](https://img.shields.io/github/stars/jhlee0409/cctreeline?style=social)
+
 A [Claude Code](https://claude.com/claude-code) statusline for people who run **multiple git worktrees** and **parallel Claude sessions**.
 
 Most statuslines tell you about *one* repo. `cctreeline` adds a third line that, for **only the worktrees you actually edited in the current session**, shows each one's open PR numbers — a view nothing else in the ecosystem gives you.
 
 ```
 12m · myapp/server · main ⌂main ●3 +1 ↑2 · Opus 4.8 1M · id:a1b2c3d4-e5f6
-ctx ███░░░░░░░ 31% · 7d·Opus ██████░░░░ 58% 2d3h · 5h-42% 3h12m
+ctx ███░░░░░░░ 31% · 7d·Opus █████░░░░░ 58% 2d3h · 5h-42% 3h12m
 ⎇ feature-auth      PR: #142
 ⎇ hotfix-payments   PR: #143 #144
 ```
@@ -30,7 +34,7 @@ Two secondary niceties:
 
 ## Install
 
-Requires `bash`, `jq`, `git`. Optional: `gh` (PR numbers on line 3), `curl` (usage gauges).
+Requires `bash`, `jq`, `git`. Optional: `gh` (PR numbers on line 3), `curl` (usage gauges), `timeout`/`gtimeout` from coreutils (bounds the `gh` call; stock on Linux, `brew install coreutils` on macOS — without it the PR fetch runs unbounded).
 
 ```bash
 git clone https://github.com/jhlee0409/cctreeline
@@ -38,13 +42,16 @@ cd cctreeline
 bash install.sh
 ```
 
-The installer auto-detects your OS, date flavor, credential store, and dependencies, then asks **three** questions:
+The installer auto-detects your OS, date flavor, credential store, and dependencies, then asks **up to four** questions:
 
-1. **Enable 5h / weekly usage gauges?** — these read your Claude credentials (macOS Keychain or `~/.claude/.credentials.json`) and call `api.anthropic.com`. Off if you decline.
+1. **Enable 5h / weekly usage gauges?** — reads your Claude credentials (macOS Keychain or `~/.claude/.credentials.json`) and calls `api.anthropic.com`. *(Only asked when credentials **and** `curl` are present; skipped otherwise.)*
 2. **Enable the worktree + PR line?** — needs `gh` for PR numbers.
-3. **ASCII glyphs / compact mode?** — for terminals without box-drawing fonts.
+3. **Use ASCII glyphs?** — for terminals without box-drawing fonts.
+4. **Compact line 2?** — show only `ctx` + `5h`, hide weekly/output-style.
 
 Everything else is detected. It backs up your `settings.json` and won't overwrite an existing statusline without asking.
+
+Non-interactive (`bash install.sh --defaults`, or any no-TTY run) uses safe defaults and keeps the credential-reading gauge **off** unless you pass `--enable-usage`.
 
 ### Manual install
 
@@ -79,8 +86,33 @@ You never invoke these; the render path fires them via `nohup` when a cache goes
 
 - **Per-model weekly scope** depends on the OAuth usage API exposing a `limits[]` array with weekly buckets. On accounts/regions where the endpoint returns only a flat `seven_day` value, the gauge degrades to a plain `7d` (no model tag). This is an undocumented API surface — treat the scope tag as best-effort.
 - **No cost / $ display, no themes, no config TUI.** By design — this is a focused tool, not a framework. If you want those, ccstatusline / claude-powerline are better.
-- The worktree line is only useful with **multiple worktrees**. Single-worktree users will see an empty line 3 (or turn it off).
+- The worktree line (line 3) only appears for linked worktrees whose files you **edited this session** (the main repo is excluded). If you have no linked worktrees — or didn't edit any this session — line 3 is simply omitted (not a blank line). It's most useful when you run several worktrees in parallel.
+
+## Uninstall
+
+The installer touches four places; to fully remove cctreeline:
+
+```bash
+# 1. restore your statusline — either from the timestamped backup the installer made…
+ls ~/.claude/settings.json.cctreeline-bak.*        # pick the right one
+cp ~/.claude/settings.json.cctreeline-bak.<epoch> ~/.claude/settings.json
+#    …or, if cctreeline was your only statusline, just drop the key:
+#    jq 'del(.statusLine)' ~/.claude/settings.json | sponge ~/.claude/settings.json
+
+# 2. remove the runtime, config, and cache (respect XDG_*/CLAUDE_CONFIG_DIR if you set them)
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/cctreeline" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/cctreeline" \
+       "${XDG_CACHE_HOME:-$HOME/.cache}/cctreeline"
+```
+
+## Acknowledgements
+
+The 5h/weekly usage refresh mirrors the OAuth-usage approach of [claude-hud](https://github.com/jarrodwatts/claude-hud) (MIT, by Jarrod Watts), and will reuse its usage cache if present to avoid a duplicate API call. Thanks also to [ccstatusline](https://github.com/sirmalloc/ccstatusline) and [claude-powerline](https://github.com/Owloops/claude-powerline) for charting the Claude Code statusline space.
+
+## Contributing
+
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

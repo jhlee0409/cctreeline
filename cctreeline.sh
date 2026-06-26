@@ -45,6 +45,11 @@ CCTREELINE_REUSE_HUD_CACHE=auto # reuse claude-hud's usage cache if present
 # ── platform detection (never asked — always auto) ──────────────
 case "$(uname -s)" in Darwin) IS_MAC=1 ;; *) IS_MAC=0 ;; esac
 if date --version >/dev/null 2>&1; then GNU_DATE=1; else GNU_DATE=0; fi
+# bound the gh PR query if a timeout binary exists (stock on Linux; Homebrew
+# coreutils as gtimeout on macOS). Empty = run unbounded (refresh is async anyway).
+if   command -v timeout  >/dev/null 2>&1; then GH_TIMEOUT='timeout 5'
+elif command -v gtimeout >/dev/null 2>&1; then GH_TIMEOUT='gtimeout 5'
+else GH_TIMEOUT=''; fi
 
 _epoch_now() { date +%s; }
 
@@ -207,7 +212,7 @@ refresh_worktrees() {
     path="${entry%%|*}"; branch="${entry#*|}"
     name=$(basename "$path"); slug="${name#"${main_basename}"-}"
     if [ "$has_gh" = "1" ]; then
-      prs=$(cd "$path" 2>/dev/null && timeout 5 gh pr list --head "$branch" --state open --json number 2>/dev/null || echo '[]')
+      prs=$(cd "$path" 2>/dev/null && $GH_TIMEOUT gh pr list --head "$branch" --state open --json number 2>/dev/null || echo '[]')
     else prs='[]'; fi
     [ -z "$prs" ] && prs='[]'
     pr_nums=$(jq -c '[.[].number]' <<<"$prs" 2>/dev/null || echo '[]')
@@ -424,7 +429,7 @@ fi
 
 # ── session duration ────────────────────────────────────────────
 dur_disp=""
-if [ -n "$duration_ms" ] && [ "$duration_ms" -gt 0 ] 2>/dev/null; then
+if [ -n "$duration_ms" ] && [[ "$duration_ms" =~ ^[0-9]+$ ]] && [ "$duration_ms" -gt 0 ]; then
   s=$(( duration_ms / 1000 ))
   if   (( s < 60 )); then ds="${s}s"
   elif (( s < 3600 )); then ds="$((s/60))m"
