@@ -5,10 +5,10 @@ A [Claude Code](https://claude.com/claude-code) statusline for people who run **
 Most statuslines tell you about *one* repo. `cctreeline` adds a third line that, for **only the worktrees you actually edited in the current session**, shows each one's open PR numbers — a view nothing else in the ecosystem gives you.
 
 ```
-12m · myapp/backend · main ⌂main ●3 +1 ↑2 · Opus 4.8 1M · id:a1b2c3d4-e5f6
+12m · myapp/server · main ⌂main ●3 +1 ↑2 · Opus 4.8 1M · id:a1b2c3d4-e5f6
 ctx ███░░░░░░░ 31% · 7d·Opus ██████░░░░ 58% 2d3h · 5h-42% 3h12m
-⎇ feature-auth  PR: #142
-⎇ hotfix-payments PR: #143 #144
+⎇ feature-auth      PR: #142
+⎇ hotfix-payments   PR: #143 #144
 ```
 
 - **Line 1** — session duration · repo-relative path · branch + **worktree badge** (`⌂main` vs `⎇wt(parent)`) + dirty marks (`●` modified, `+` staged, `↑` ahead) · model + **1M-context** badge · session id
