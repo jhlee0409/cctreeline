@@ -48,12 +48,21 @@ if date --version >/dev/null 2>&1; then GNU_DATE=1; else GNU_DATE=0; fi
 
 _epoch_now() { date +%s; }
 
-# parse an ISO8601 timestamp (e.g. 2026-06-26T14:30:00) to epoch seconds
+# parse an RFC3339 / ISO8601 timestamp to epoch seconds. Handles a trailing
+# Z, a numeric ±HH:MM offset, fractional seconds, or a bare (UTC-assumed) time.
 _epoch_from_iso() {
-  local iso="${1%.*}"   # strip fractional seconds
+  local iso="$1"
   if [ "$GNU_DATE" = "1" ]; then
-    date -u -d "${iso/T/ } UTC" +%s 2>/dev/null || echo 0
+    case "$iso" in
+      # zoned (Z or ±HH:MM) — GNU date honors it directly
+      *T*[Zz]|*T*[+-][0-9][0-9]:[0-9][0-9]) date -u -d "$iso" +%s 2>/dev/null || echo 0 ;;
+      # zoneless — force UTC so the epoch doesn't shift by the local offset
+      *) date -u -d "${iso/T/ } UTC" +%s 2>/dev/null || echo 0 ;;
+    esac
   else
+    # BSD date can't parse zone designators; strip fractional, Z, and offset,
+    # then parse as UTC (resets_at is UTC in practice).
+    iso="${iso%.*}"; iso="${iso%[Zz]}"; iso="${iso%[+-][0-9][0-9]:[0-9][0-9]}"
     date -j -u -f "%Y-%m-%dT%H:%M:%S" "$iso" +%s 2>/dev/null || echo 0
   fi
 }
@@ -81,13 +90,17 @@ _read_credentials() {
 # ════════════════════════════════════════════════════════════════
 refresh_usage() {
   local cache="$USAGE_CACHE" lock="$CACHE_DIR/usage.lock"
-  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/treeline-usage.XXXXXX") || return 0
-  trap 'rm -f "$tmp"' EXIT
-  if [ -f "$lock" ]; then
+  # atomic single-flight: noclobber create wins the lock; otherwise honor an
+  # existing lock unless it's stale (>30s), then take it over.
+  if ( set -o noclobber; echo $$ > "$lock" ) 2>/dev/null; then :
+  else
     local age=$(( $(_epoch_now) - $(_file_mtime "$lock") ))
     [ "$age" -lt 30 ] && return 0
+    echo $$ > "$lock"
   fi
-  echo $$ > "$lock"; trap 'rm -f "$tmp" "$lock"' EXIT
+  # tmp inside CACHE_DIR so the final mv is a same-filesystem atomic rename
+  local tmp; tmp=$(mktemp "$CACHE_DIR/usage.XXXXXX") || { rm -f "$lock"; return 0; }
+  trap 'rm -f "$tmp" "$lock"' EXIT
 
   local creds token sub
   creds=$(_read_credentials) || return 0
@@ -98,12 +111,14 @@ refresh_usage() {
   local plan="Max"
   case "$sub" in *[Mm]ax*) plan="Max";; *[Pp]ro*) plan="Pro";; *[Tt]eam*) plan="Team";; esac
 
+  # Pass the bearer token via a curl config on stdin (-K -) so the secret never
+  # appears in the process argument list (ps-readable). CWE-214.
   local resp
-  resp=$(curl -sS --max-time 5 \
-    -H "Authorization: Bearer $token" \
-    -H "anthropic-beta: oauth-2025-04-20" \
-    -H "User-Agent: treeline/0.1" \
-    "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || return 0
+  resp=$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl -sS --max-time 5 -K - \
+      -H "anthropic-beta: oauth-2025-04-20" \
+      -H "User-Agent: treeline/0.1" \
+      "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || return 0
   [ -z "$resp" ] && return 0
 
   local five_h seven_d five_reset seven_reset
@@ -131,6 +146,10 @@ refresh_usage() {
     week_pct="$seven_d"; week_reset="$seven_reset"; week_scope="all"
   fi
 
+  # coerce to numeric so a malformed API value can't make jq -n fail
+  [[ "$five_h"   =~ ^[0-9]+(\.[0-9]+)?$ ]] || five_h=0
+  [[ "$week_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || week_pct=0
+
   jq -n \
     --arg plan "$plan" --argjson fh "${five_h:-0}" \
     --arg fr "$five_reset" --argjson wp "${week_pct:-0}" \
@@ -138,8 +157,7 @@ refresh_usage() {
     --argjson ts "$(($(_epoch_now) * 1000))" \
     '{data:{planName:$plan, fiveHour:$fh, fiveHourResetAt:$fr,
             weeklyBindingPct:$wp, weeklyBindingScope:$wsc, weeklyBindingResetAt:$wr},
-      timestamp:$ts}' > "$tmp"
-  mv "$tmp" "$cache"
+      timestamp:$ts}' > "$tmp" && [ -s "$tmp" ] && mv "$tmp" "$cache" || rm -f "$tmp"
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -147,13 +165,14 @@ refresh_usage() {
 # ════════════════════════════════════════════════════════════════
 refresh_worktrees() {
   local cwd="${1:-$PWD}" cache="$WT_CACHE" lock="$CACHE_DIR/worktrees.lock"
-  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/treeline-wt.XXXXXX") || return 0
-  trap 'rm -f "$tmp"' EXIT
-  if [ -f "$lock" ]; then
+  if ( set -o noclobber; echo $$ > "$lock" ) 2>/dev/null; then :
+  else
     local age=$(( $(_epoch_now) - $(_file_mtime "$lock") ))
     [ "$age" -lt 60 ] && return 0
+    echo $$ > "$lock"
   fi
-  echo $$ > "$lock"; trap 'rm -f "$tmp" "$lock"' EXIT
+  local tmp; tmp=$(mktemp "$CACHE_DIR/wt.XXXXXX") || { rm -f "$lock"; return 0; }
+  trap 'rm -f "$tmp" "$lock"' EXIT
 
   local common_dir abs_common_dir main_repo main_basename
   common_dir=$(git -C "$cwd" --no-optional-locks rev-parse --git-common-dir 2>/dev/null) || return 0
@@ -199,8 +218,7 @@ refresh_worktrees() {
   done
 
   jq -n --argjson wts "$worktrees_json" --argjson ts "$(($(_epoch_now) * 1000))" \
-    '{worktrees:$wts, timestamp:$ts}' > "$tmp"
-  mv "$tmp" "$cache"
+    '{worktrees:$wts, timestamp:$ts}' > "$tmp" && [ -s "$tmp" ] && mv "$tmp" "$cache" || rm -f "$tmp"
 }
 
 # ── dispatch subcommands ────────────────────────────────────────
@@ -269,7 +287,12 @@ duration_ms=$(jq -r '.cost.total_duration_ms // empty' <<<"$input")
 exceeds_200k=$(jq -r '.exceeds_200k_tokens // false' <<<"$input")
 
 # ── path (repo-relative, middle-ellipsis) ───────────────────────
-short_cwd="${cwd/#$HOME/~}"
+# collapse $HOME to ~ only on a path boundary (so /Users/jackson ≠ ~son)
+case "$cwd" in
+  "$HOME")   short_cwd="~" ;;
+  "$HOME"/*) short_cwd="~${cwd#"$HOME"}" ;;
+  *)         short_cwd="$cwd" ;;
+esac
 git_top=$(git -C "$cwd" --no-optional-locks rev-parse --show-toplevel 2>/dev/null)
 if [ -n "$git_top" ]; then
   repo_name=$(basename "$git_top"); rel="${cwd#"$git_top"}"; rel="${rel#/}"
@@ -345,6 +368,8 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
     in_tok=$(jq -r '.input_tokens // 0' <<<"$usage_json")
     cr_tok=$(jq -r '.cache_read_input_tokens // 0' <<<"$usage_json")
     cc_tok=$(jq -r '.cache_creation_input_tokens // 0' <<<"$usage_json")
+    # never feed transcript-derived values into $(( )) unvalidated
+    for _v in in_tok cr_tok cc_tok; do [[ ${!_v} =~ ^[0-9]+$ ]] || printf -v "$_v" 0; done
     used=$(( in_tok + cr_tok + cc_tok ))
     if (( is_1m )); then max=1000000; else max=200000; fi
     ctx_pct=$(( used * 100 / max )); (( ctx_pct > 100 )) && ctx_pct=100
@@ -355,7 +380,7 @@ fi
 block_pct=""; block_remain=""; week_pct=""; week_remain=""; week_scope="all"
 if [ "$TREELINE_USAGE_GAUGES" = "1" ]; then
   # prefer treeline's own cache; optionally reuse claude-hud's if present
-  hud_cache="$HOME/.claude/plugins/claude-hud/.usage-cache.json"
+  hud_cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/claude-hud/.usage-cache.json"
   active_cache="$USAGE_CACHE"
   if [ "$TREELINE_REUSE_HUD_CACHE" != "0" ] && [ -f "$hud_cache" ]; then
     [ ! -f "$USAGE_CACHE" ] && active_cache="$hud_cache"
@@ -364,13 +389,15 @@ if [ "$TREELINE_USAGE_GAUGES" = "1" ]; then
   # async refresh if our cache is stale (>60s)
   needs_refresh=1
   if [ -f "$USAGE_CACHE" ]; then
-    age=$(( $(_epoch_now) - ($(jq -r '.timestamp // 0' "$USAGE_CACHE" 2>/dev/null) / 1000) ))
+    ts=$(jq -r '.timestamp // 0' "$USAGE_CACHE" 2>/dev/null)
+    [[ "$ts" =~ ^[0-9]+$ ]] || ts=0   # empty/malformed cache must not break $(( ))
+    age=$(( $(_epoch_now) - ts/1000 ))
     [ "$age" -lt 60 ] && needs_refresh=0
   fi
   if [ "$needs_refresh" = "1" ]; then
     nohup bash "$SELF" --refresh-usage >/dev/null 2>&1 & disown 2>/dev/null || true
   fi
-  if [ -f "$active_cache" ]; then
+  if [ -f "$active_cache" ] && jq empty "$active_cache" 2>/dev/null; then
     block_pct=$(jq -r '.data.fiveHour // empty' "$active_cache")
     week_pct=$(jq -r '.data.weeklyBindingPct // .data.sevenDay // empty' "$active_cache")
     week_scope=$(jq -r '.data.weeklyBindingScope // "all"' "$active_cache")
@@ -454,30 +481,41 @@ if [ "$wt_enabled" = "1" ] && [ -n "$git_top" ]; then
   # async refresh worktree cache if stale (>120s)
   wt_needs=1
   if [ -f "$WT_CACHE" ]; then
-    age=$(( $(_epoch_now) - ($(jq -r '.timestamp // 0' "$WT_CACHE" 2>/dev/null) / 1000) ))
+    ts=$(jq -r '.timestamp // 0' "$WT_CACHE" 2>/dev/null)
+    [[ "$ts" =~ ^[0-9]+$ ]] || ts=0
+    age=$(( $(_epoch_now) - ts/1000 ))
     [ "$age" -lt 120 ] && wt_needs=0
   fi
   [ "$wt_needs" = "1" ] && { nohup bash "$SELF" --refresh-worktrees "$cwd" >/dev/null 2>&1 & disown 2>/dev/null || true; }
 
-  # edited file paths this session (Edit/Write/MultiEdit/NotebookEdit)
+  # edited file paths this session (Edit/Write/MultiEdit use file_path;
+  # NotebookEdit uses notebook_path)
   edited=""
   if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
     edited=$(jq -r '
       select(.type=="assistant") | .message.content[]?
       | select(.type=="tool_use")
       | select(.name=="Edit" or .name=="Write" or .name=="MultiEdit" or .name=="NotebookEdit")
-      | .input.file_path // empty' "$transcript_path" 2>/dev/null | sort -u)
+      | (.input.file_path // .input.notebook_path) // empty' "$transcript_path" 2>/dev/null | sort -u)
   fi
   if [ -f "$WT_CACHE" ] && [ -n "$edited" ]; then
+    # canonicalize edited paths once (resolve symlinked prefixes; the file may
+    # be gone after a delete, so resolve its directory and re-append basename)
+    edited_real=""
+    while IFS= read -r ep; do
+      [ -z "$ep" ] && continue
+      epd=$(cd "$(dirname "$ep")" 2>/dev/null && pwd -P) && edited_real+="$epd/$(basename "$ep")"$'\n' || edited_real+="$ep"$'\n'
+    done <<<"$edited"
     items=()
     while IFS=$'\t' read -r name slug wpath prs_json; do
       [ -z "$slug" ] && continue
-      # active if any edited path lives under this worktree's absolute path
+      # canonicalize the worktree path once, then match by path boundary
+      wreal=$(cd "$wpath" 2>/dev/null && pwd -P) || wreal="$wpath"
       active=0
       while IFS= read -r ep; do
         [ -z "$ep" ] && continue
-        case "$ep" in "$wpath"/*|"$wpath") active=1; break ;; esac
-      done <<<"$edited"
+        case "$ep" in "$wreal"/*|"$wreal") active=1; break ;; esac
+      done <<<"$edited_real"
       [ "$active" = "1" ] || continue
       pr_nums=""; has_pr=0
       while IFS= read -r num; do

@@ -128,6 +128,13 @@ ok "config  → $CONFIG_FILE"
 mkdir -p "$CLAUDE_DIR"
 NEW_CMD="bash $INSTALLED"
 if [ -f "$SETTINGS" ]; then
+  # refuse to touch a settings.json we can't parse (don't risk truncating it)
+  if ! jq empty "$SETTINGS" >/dev/null 2>&1; then
+    err "$SETTINGS is not valid JSON — leaving it untouched. Fix it, then re-run."
+    say "    To enable treeline by hand, add:"
+    say "    \"statusLine\": { \"type\": \"command\", \"command\": \"$NEW_CMD\" }"
+    exit 1
+  fi
   EXISTING=$(jq -r '.statusLine.command // empty' "$SETTINGS" 2>/dev/null || echo "")
   if [ -n "$EXISTING" ] && [ "$EXISTING" != "$NEW_CMD" ]; then
     warn "An existing statusLine is configured:"
@@ -140,9 +147,16 @@ if [ -f "$SETTINGS" ]; then
   fi
   BACKUP="$SETTINGS.treeline-bak.$(date +%s 2>/dev/null || echo bak)"
   cp "$SETTINGS" "$BACKUP"; ok "backed up settings.json → $BACKUP"
-  tmp=$(mktemp); jq --arg cmd "$NEW_CMD" '.statusLine = {type:"command", command:$cmd}' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+  # tmp in the destination dir → mv is a same-filesystem atomic rename
+  tmp=$(mktemp "$CLAUDE_DIR/settings.json.XXXXXX"); trap 'rm -f "$tmp"' EXIT
+  if jq --arg cmd "$NEW_CMD" '.statusLine = {type:"command", command:$cmd}' "$SETTINGS" > "$tmp"; then
+    mv "$tmp" "$SETTINGS"
+  else
+    err "Failed to update settings.json — left unchanged (backup at $BACKUP)."; exit 1
+  fi
 else
-  printf '{\n  "statusLine": { "type": "command", "command": "%s" }\n}\n' "$NEW_CMD" > "$SETTINGS"
+  # new file — build via jq so the path value is always correctly escaped
+  jq -n --arg cmd "$NEW_CMD" '{statusLine:{type:"command", command:$cmd}}' > "$SETTINGS"
 fi
 ok "wired into $SETTINGS"
 
