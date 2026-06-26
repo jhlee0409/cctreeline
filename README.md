@@ -6,6 +6,8 @@
 
 A [Claude Code](https://claude.com/claude-code) statusline for people who run **multiple git worktrees** and **parallel Claude sessions**.
 
+![cctreeline statusline demo](demo/cctreeline.gif)
+
 Most statuslines tell you about *one* repo. `cctreeline` adds a third line that, for **only the worktrees you actually edited in the current session**, shows each one's open PR numbers — a view nothing else in the ecosystem gives you.
 
 ```
