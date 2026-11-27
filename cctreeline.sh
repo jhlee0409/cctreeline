@@ -215,7 +215,7 @@ refresh_usage() {
   resp=$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
     | curl -sS --max-time 5 -K - \
       -H "anthropic-beta: oauth-2025-04-20" \
-      -H "User-Agent: cctreeline/0.1" \
+      -H "User-Agent: cctreeline/0.2" \
       "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || return 0
   [ -z "$resp" ] && return 0
 

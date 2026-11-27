@@ -5,6 +5,8 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-11-27
+
 ### Changed
 - Follow the Claude Code 2.1 statusLine stdin schema:
   - ctx gauge reads `context_window.used_percentage`; transcript parsing is now only a fallback.
@@ -37,5 +39,6 @@ Initial release.
 - `install.sh` — auto-detects environment, asks up to four questions, safe `settings.json` merge with backup; `--defaults` keeps the credential-reading gauge off unless `--enable-usage`.
 - Config via `${XDG_CONFIG_HOME:-~/.config}/cctreeline/config`; color/glyph/density modes.
 
-[Unreleased]: https://github.com/jhlee0409/cctreeline/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jhlee0409/cctreeline/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jhlee0409/cctreeline/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jhlee0409/cctreeline/releases/tag/v0.1.0
