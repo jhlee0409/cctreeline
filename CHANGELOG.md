@@ -13,9 +13,7 @@ All notable changes to this project are documented here. Format loosely follows
 - Line 3 also counts a worktree as worked in when a `Bash` command names its path, not only when a file there was edited.
 - The worktree cache is per repository (`worktrees-<repo>-<cksum>.json`), so switching repos no longer mixes their worktree lists.
 - Installer Q1 now describes the usage API as a fallback. Re-running the installer keeps config keys it doesn't ask about (e.g. `CCTREELINE_PLAN`).
-- README rewritten; demo uses the 2.1 stdin schema and an isolated `HOME`; GIF regenerated.
-
-- README rewritten: quick start, line-by-line table, flow diagram, what-it-reads/sends table, troubleshooting. Demo now feeds the 2.1 stdin schema (no seeded usage cache); GIF regenerated.
+- README rewritten: quick start, line-by-line table, flow diagram, what-it-reads/sends table, troubleshooting. Demo feeds the 2.1 stdin schema with an isolated `HOME` and no seeded usage cache; GIF regenerated.
 
 ### Added
 - Line 1: effort level (`nothink` / `fast` when set), `agent:` name, `+Ndir` for added dirs, signed-in account (`CCTREELINE_ACCOUNT`), session name.
