@@ -17,6 +17,7 @@ Out of scope (by design): cost/$ display, theme engines, a config TUI. Those are
 ```bash
 shellcheck cctreeline.sh install.sh     # must pass clean
 bash -n cctreeline.sh install.sh        # syntax
+bash tests/render_test.sh               # render against recorded stdin payloads
 ```
 
 - The **render path must never error out** — a failure blanks the user's statusline. Guard every external read; degrade gracefully.

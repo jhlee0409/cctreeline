@@ -14,3 +14,5 @@ jobs:
         run: shellcheck --severity=warning cctreeline.sh install.sh
       - name: Syntax check
         run: bash -n cctreeline.sh && bash -n install.sh
+      - name: Render tests
+        run: bash tests/render_test.sh
