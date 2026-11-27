@@ -2,9 +2,10 @@
 # cctreeline — a Claude Code statusline for people who run multiple git worktrees.
 #
 # Three lines:
-#   1. duration · path · branch + worktree badge + dirty marks · model · session id
-#   2. ctx gauge │ weekly (auto-binding, per-model scope) │ 5h rolling
-#   3. per-worktree open-PR overview, scoped to the worktrees you edited THIS session
+#   1. duration · path · branch + worktree badge + dirty marks · model + effort ·
+#      agent · signed-in account · session name/id
+#   2. ctx gauge · prompt cache · weekly · 5h rolling · compactions · plan·$cost
+#   3. per-worktree open-PR overview, scoped to the worktrees you worked in THIS session
 #
 # Pure bash + jq. No node in the render hot path, no `npx @latest` on every frame.
 # Cross-platform: auto-detects GNU/BSD date+stat and the platform credential store.
@@ -39,6 +40,11 @@ CCTREELINE_COLOR=auto           # auto | 256 | none
 CCTREELINE_GLYPHS=unicode       # unicode | ascii
 CCTREELINE_DENSITY=full         # full | compact
 CCTREELINE_REUSE_HUD_CACHE=auto # reuse claude-hud's usage cache if present
+CCTREELINE_ACCOUNT=auto         # which Claude account is signed in:
+                                #   auto | email | name | org | off
+CCTREELINE_COST=1               # session cost so far ($) on line 2
+CCTREELINE_COMPACTIONS=1        # how many times this session compacted
+CCTREELINE_PLAN=""              # plan label override (e.g. Ultra); empty = derive from ~/.claude.json
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 
@@ -90,6 +96,88 @@ _read_credentials() {
   return 1
 }
 
+# ── billing plan behind the session cost ────────────────────────
+# The cost figure Claude Code reports is priced at API rates whatever you are
+# actually paying, so on a subscription it is a usage-equivalent and not a bill.
+# Tagging it with the plan is what makes that readable at a glance: "Max20x·$3"
+# says "worth $3 of API usage, drawn against a Max 20x subscription", while a
+# bare "$3" on an API key really is $3.
+#
+# Read from the same local .claude.json as the account label — no credential
+# read, no network — so it stays available with CCTREELINE_USAGE_GAUGES=0.
+# billingType says whether this is a subscription at all; the rate-limit tier
+# carries the grade, and is more specific than the usage API's plan name ("Max"
+# alone cannot tell 5x from 20x).
+_plan_label() {
+  [ -n "$CCTREELINE_PLAN" ] && { [ "$CCTREELINE_PLAN" = "off" ] || printf '%s' "$CCTREELINE_PLAN"; return 0; }
+  local cfg="" f
+  for f in "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" "$HOME/.claude.json"; do
+    [ -f "$f" ] && [ -r "$f" ] && { cfg="$f"; break; }
+  done
+  [ -n "$cfg" ] || return 0
+  local raw
+  raw=$(jq -r '
+    (.oauthAccount // {}) as $a
+    | [ ($a.billingType // ""),
+        (($a.organizationRateLimitTier // $a.userRateLimitTier // $a.seatTier) // "") ]
+    | join(" ")' "$cfg" 2>/dev/null)
+  # No subscription (API key, credit billing, unknown): the dollars are literal,
+  # so say nothing rather than invent a plan.
+  case "$raw" in *subscription*) ;; *) return 0 ;; esac
+  case "$raw" in
+    *max_20x*)    printf 'Max20x' ;;
+    *max_5x*)     printf 'Max5x'  ;;
+    *max*)        printf 'Max'    ;;
+    *pro*)        printf 'Pro'    ;;
+    *team*)       printf 'Team'   ;;
+    *enterprise*) printf 'Ent'    ;;
+    *)            printf 'Sub'    ;;   # subscription of an unrecognised grade
+  esac
+}
+
+# ── signed-in Claude account ────────────────────────────────────
+# Answers "which account is this session running as" — the thing you cannot
+# recover from the statusLine payload, which carries no account field at all.
+# Source is Claude Code's own config (.claude.json, `oauthAccount`): a local
+# file, no network call, and no secret in it — unlike the credential store the
+# usage gauges read, so this stays available with CCTREELINE_USAGE_GAUGES=0.
+# Measured at ~5ms per render against a 155KB config, ~1% of a full render, so
+# it is read inline rather than cached behind another background refresher.
+#
+#   auto  local-part of the email, falling back to the display name  (@alice)
+#   email full address — unambiguous across domains, longest        (alice@example.com)
+#   name  display/full name as set on the account                   (@Alice Kim)
+#   org   organization — the useful one on a team seat              (@Example Inc)
+#   off   omit the segment
+_account_label() {
+  [ "$CCTREELINE_ACCOUNT" = "off" ] && return 0
+  local cfg="" f
+  for f in "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" "$HOME/.claude.json"; do
+    [ -f "$f" ] && [ -r "$f" ] && { cfg="$f"; break; }
+  done
+  [ -n "$cfg" ] || return 0
+  # The choice is made inside jq on purpose. Splitting three fields out with
+  # `IFS=$'\t' read` looks equivalent but is not: tab is an IFS whitespace
+  # character, so bash collapses consecutive tabs and an empty middle field
+  # silently shifts every later field left.
+  local label
+  label=$(jq -r --arg mode "$CCTREELINE_ACCOUNT" '
+    (.oauthAccount // {}) as $a
+    | ($a.emailAddress // "")                as $email
+    | (($a.displayName // $a.fullName) // "") as $name
+    | ($a.organizationName // "")            as $org
+    | if   $mode == "email" then $email
+      elif $mode == "name"  then $name
+      elif $mode == "org"   then $org
+      # Local-part only by default: it still tells two logins apart, and a
+      # statusline is on screen during every screen-share and screenshot.
+      else (if $email != "" then ($email | split("@")[0]) else $name end)
+      end
+    | select(type == "string" and . != "")' "$cfg" 2>/dev/null)
+  [ -n "$label" ] || return 0
+  printf '%s' "$label"
+}
+
 # ════════════════════════════════════════════════════════════════
 # SUBCOMMAND: --refresh-usage  (5h + weekly limits via OAuth usage API)
 # ════════════════════════════════════════════════════════════════
@@ -105,7 +193,12 @@ refresh_usage() {
   fi
   # tmp inside CACHE_DIR so the final mv is a same-filesystem atomic rename
   local tmp; tmp=$(mktemp "$CACHE_DIR/usage.XXXXXX") || { rm -f "$lock"; return 0; }
-  trap 'rm -f "$tmp" "$lock"' EXIT
+  # The trap fires after this function has returned, so a `local` is already out
+  # of scope by then and the cleanup silently expanded to `rm -f "" ""` — the
+  # lock file survived every run, and a surviving lock suppresses the next
+  # refresh until it ages out. Hand the trap globals that still exist at EXIT.
+  _CCT_TMP="$tmp"; _CCT_LOCK="$lock"
+  trap 'rm -f "$_CCT_TMP" "$_CCT_LOCK"' EXIT
 
   local creds token sub
   creds=$(_read_credentials) || return 0
@@ -131,7 +224,8 @@ refresh_usage() {
   seven_d=$(jq -r '.seven_day.utilization // empty' <<<"$resp")
   five_reset=$(jq -r '.five_hour.resets_at // empty' <<<"$resp")
   seven_reset=$(jq -r '.seven_day.resets_at // empty' <<<"$resp")
-  [ -z "$five_h" ] && return 0
+  # five_hour can be null (no 5h window reported); weekly must still refresh
+  [ -z "$five_h" ] && [ -z "$seven_d" ] && return 0
 
   # 2026+ usage API may expose a limits[] array with per-model weekly buckets.
   # Pick the binding weekly limit the way /status highlights it: prefer the
@@ -152,11 +246,11 @@ refresh_usage() {
   fi
 
   # coerce to numeric so a malformed API value can't make jq -n fail
-  [[ "$five_h"   =~ ^[0-9]+(\.[0-9]+)?$ ]] || five_h=0
+  [[ "$five_h"   =~ ^[0-9]+(\.[0-9]+)?$ ]] || five_h=null
   [[ "$week_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || week_pct=0
 
   jq -n \
-    --arg plan "$plan" --argjson fh "${five_h:-0}" \
+    --arg plan "$plan" --argjson fh "${five_h:-null}" \
     --arg fr "$five_reset" --argjson wp "${week_pct:-0}" \
     --arg wsc "$week_scope" --arg wr "$week_reset" \
     --argjson ts "$(($(_epoch_now) * 1000))" \
@@ -165,11 +259,37 @@ refresh_usage() {
       timestamp:$ts}' > "$tmp" && [ -s "$tmp" ] && mv "$tmp" "$cache" || rm -f "$tmp"
 }
 
+# ── per-repository worktree cache path ──────────────────────────
+# One shared worktrees.json made every repository fight over the same slot:
+# alternate between two checkouts and each render matched this session's edits
+# against the *other* repository's worktree list until the 120s TTL expired.
+# Key the cache by the main repository (git-common-dir/..), which is identical
+# for every linked worktree of that repo, so switching repositories can no
+# longer poison a match. Falls back to the shared path outside a git repo.
+_wt_cache_for() {
+  local cwd="${1:-$PWD}" common abs main base key
+  common=$(git -C "$cwd" --no-optional-locks rev-parse --git-common-dir 2>/dev/null)
+  [ -n "$common" ] || { printf '%s\n' "$CACHE_DIR/worktrees.json"; return 0; }
+  case "$common" in
+    /*) abs="$common" ;;
+    *)  abs=$(cd "$cwd" 2>/dev/null && cd "$common" 2>/dev/null && pwd) ;;
+  esac
+  [ -n "$abs" ] || { printf '%s\n' "$CACHE_DIR/worktrees.json"; return 0; }
+  main=$(cd "$abs/.." 2>/dev/null && pwd)
+  [ -n "$main" ] || { printf '%s\n' "$CACHE_DIR/worktrees.json"; return 0; }
+  # basename is for a human reading ls; the checksum is what makes it unique.
+  base=$(printf '%s' "${main##*/}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
+  key=$(printf '%s' "$main" | cksum 2>/dev/null | awk '{print $1}')
+  [ -n "$key" ] || key=0
+  printf '%s\n' "$CACHE_DIR/worktrees-$base-$key.json"
+}
+
 # ════════════════════════════════════════════════════════════════
 # SUBCOMMAND: --refresh-worktrees CWD  (worktree list + open PRs)
 # ════════════════════════════════════════════════════════════════
 refresh_worktrees() {
-  local cwd="${1:-$PWD}" cache="$WT_CACHE" lock="$CACHE_DIR/worktrees.lock"
+  local cwd="${1:-$PWD}" cache lock
+  cache=$(_wt_cache_for "$cwd"); lock="${cache%.json}.lock"
   if ( set -o noclobber; echo $$ > "$lock" ) 2>/dev/null; then :
   else
     local age=$(( $(_epoch_now) - $(_file_mtime "$lock") ))
@@ -177,7 +297,9 @@ refresh_worktrees() {
     echo $$ > "$lock"
   fi
   local tmp; tmp=$(mktemp "$CACHE_DIR/wt.XXXXXX") || { rm -f "$lock"; return 0; }
-  trap 'rm -f "$tmp" "$lock"' EXIT
+  # Same local-vs-EXIT-trap defect as refresh_usage: see the note there.
+  _CCT_TMP="$tmp"; _CCT_LOCK="$lock"
+  trap 'rm -f "$_CCT_TMP" "$_CCT_LOCK"' EXIT
 
   local common_dir abs_common_dir main_repo main_basename
   common_dir=$(git -C "$cwd" --no-optional-locks rev-parse --git-common-dir 2>/dev/null) || return 0
@@ -264,6 +386,8 @@ fi
 PATH_C=75; GIT_C=205; MODEL_C=220
 CTX_C=39; RATE_C=208; WEEK_C=141
 ADD_C=82; DUR_C=244; DIM_C=240; WARN_C=196
+ACCT_C=109   # signed-in account: quiet, and distinct from the session id next to it
+COST_C=246   # session cost: a total, not a gauge — deliberately the quietest thing on line 2
 
 # 10-char gauge: 1 cell = 10%
 gauge() {
@@ -289,21 +413,24 @@ model=$(jq -r '.model.display_name // ""' <<<"$input")
 model_id=$(jq -r '.model.id // ""' <<<"$input")
 output_style=$(jq -r '.output_style.name // ""' <<<"$input")
 duration_ms=$(jq -r '.cost.total_duration_ms // empty' <<<"$input")
-# Claude Code >= 2.1 sends these on stdin (absent/null early in a session or on
-# plans without rate limits) — prefer them over transcript parsing / the API.
-ctx_used_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
+cost_usd=$(jq -r '.cost.total_cost_usd // empty' <<<"$input")
+exceeds_200k=$(jq -r '.exceeds_200k_tokens // false' <<<"$input")
+# Claude Code now passes the real window size and used % on stdin.
 ctx_size=$(jq -r '.context_window.context_window_size // empty' <<<"$input")
-rl_5h_pct=$(jq -r '.rate_limits.five_hour.used_percentage // empty' <<<"$input")
-rl_5h_reset=$(jq -r '.rate_limits.five_hour.resets_at // empty' <<<"$input")
-rl_7d_pct=$(jq -r '.rate_limits.seven_day.used_percentage // empty' <<<"$input")
-rl_7d_reset=$(jq -r '.rate_limits.seven_day.resets_at // empty' <<<"$input")
-_isnum() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
-_isint() { [[ "$1" =~ ^[0-9]+$ ]]; }
-for _v in ctx_used_pct rl_5h_pct rl_7d_pct; do _isnum "${!_v}" || printf -v "$_v" ''; done
-for _v in ctx_size rl_5h_reset rl_7d_reset; do _isint "${!_v}" || printf -v "$_v" ''; done
+ctx_used=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
+[[ "$ctx_size" =~ ^[0-9]+$ ]] || ctx_size=""
+[[ "$ctx_used" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ctx_used=""
+effort=$(jq -r '.effort.level // empty' <<<"$input")
+thinking_on=$(jq -r 'if .thinking == null then "" else (.thinking.enabled // false | tostring) end' <<<"$input")
+fast_on=$(jq -r '.fast_mode // false' <<<"$input")
+session_name=$(jq -r '.session_name // empty' <<<"$input")
+agent_name=$(jq -r '(.agent | if type=="object" then (.name // .type // empty) else . end) // .agent_type // empty' <<<"$input")
+n_added=$(jq -r '(.workspace.added_dirs // []) | length' <<<"$input")
+cache_warm=$(jq -r 'if .prompt_cache == null then "" else (.prompt_cache.warm // false | tostring) end' <<<"$input")
+cache_exp=$(jq -r '.prompt_cache.expires_at // empty' <<<"$input")
 
 # ── path (repo-relative, middle-ellipsis) ───────────────────────
-# collapse $HOME to ~ only on a path boundary (so /Users/jackson ≠ ~son)
+# collapse $HOME to ~ only on a path boundary (so /home/alice2 ≠ ~2 for /home/alice)
 case "$cwd" in
   "$HOME")   short_cwd="~" ;;
   "$HOME"/*) short_cwd="~${cwd#"$HOME"}" ;;
@@ -364,24 +491,23 @@ model_short="$model"
 case "$model" in *Opus*) model_short="Opus";; *Sonnet*) model_short="Sonnet";; *Haiku*) model_short="Haiku";; esac
 ver_num=$(grep -oE '[0-9]+\.[0-9]+' <<<"$model" | head -1)
 [ -n "$ver_num" ] && model_short="$model_short $ver_num"
-# window size: stdin context_window_size when present; otherwise guess from the
-# model name. (exceeds_200k_tokens is a fixed 200k threshold, not the window
-# size, so it is not used for this.)
+# The stdin window size is authoritative. Without it (older Claude Code) guess
+# from the model name; exceeds_200k_tokens is a fixed 200k threshold rather than
+# the window size, so it is only a last hint.
 is_1m=0
 if [ -n "$ctx_size" ]; then
   (( ctx_size >= 1000000 )) && is_1m=1
-elif [[ "$model" == *"1M"* ]] || [[ "$model_id" == *"1m"* ]]; then
+elif [[ "$model" == *"1M"* ]] || [[ "$model_id" == *"1m"* ]] || [ "$exceeds_200k" = "true" ]; then
   is_1m=1
 fi
 (( is_1m )) && model_short="$model_short $(c $WEEK_C)1M$(c $MODEL_C)"
 
 # ── ctx % from transcript usage ─────────────────────────────────
 ctx_pct=""; unknown_ctx=0
-if [ -n "$ctx_used_pct" ]; then
-  ctx_pct=$(awk -v v="$ctx_used_pct" 'BEGIN{printf "%d", v+0.5}')
+if [ -n "$ctx_used" ]; then
+  ctx_pct=$(awk -v v="$ctx_used" 'BEGIN{printf "%d", v+0.5}')
   (( ctx_pct > 100 )) && ctx_pct=100
 elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-  # fallback for Claude Code builds without context_window on stdin
   unknown_ctx=1; usage_json=""
   for nn in 500 2000; do
     usage_json=$(tail -n "$nn" "$transcript_path" 2>/dev/null \
@@ -397,27 +523,32 @@ elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
     # never feed transcript-derived values into $(( )) unvalidated
     for _v in in_tok cr_tok cc_tok; do [[ ${!_v} =~ ^[0-9]+$ ]] || printf -v "$_v" 0; done
     used=$(( in_tok + cr_tok + cc_tok ))
-    if [ -n "$ctx_size" ] && (( ctx_size > 0 )); then max=$ctx_size
-    elif (( is_1m )); then max=1000000; else max=200000; fi
+    if [ -n "$ctx_size" ]; then max=$ctx_size; elif (( is_1m )); then max=1000000; else max=200000; fi
     ctx_pct=$(( used * 100 / max )); (( ctx_pct > 100 )) && ctx_pct=100
   fi
 fi
 
-# ── 5h / weekly: stdin rate_limits first, usage-API cache as fallback ──
-# countdown text for a future epoch-seconds value ("" if past/invalid)
-_remain() {
-  local diff=$(( $1 - $(_epoch_now) )) d h m
+# ── 5h / weekly from usage cache (optional, consent-gated) ──────
+block_pct=""; block_remain=""; week_pct=""; week_remain=""; week_scope="all"
+# Prefer the rate_limits Claude Code passes on stdin (no credentials, no network).
+_remain() { # seconds -> 3h20m / 2d5h / 12m
+  local diff=$1 d h m
   (( diff > 0 )) || return 0
-  if   (( diff >= 86400 )); then d=$((diff/86400)); h=$(((diff%86400)/3600)); printf '%sd' "$d"; (( h>0 )) && printf '%sh' "$h"
-  elif (( diff >= 3600 ));  then h=$((diff/3600)); m=$(((diff%3600)/60)); printf '%sh' "$h"; (( m>0 )) && printf '%sm' "$m"
-  else printf '%sm' "$((diff/60))"; fi
+  if (( diff >= 86400 )); then d=$((diff/86400)); h=$(((diff%86400)/3600)); printf '%s' "${d}d"; (( h>0 )) && printf '%s' "${h}h"
+  elif (( diff >= 3600 )); then h=$((diff/3600)); m=$(((diff%3600)/60)); printf '%s' "${h}h"; (( m>0 )) && printf '%s' "${m}m"
+  else printf '%s' "$((diff/60))m"; fi
 }
-block_pct="$rl_5h_pct"; block_remain=""; week_pct="$rl_7d_pct"; week_remain=""; week_scope="all"
-[ -n "$rl_5h_reset" ] && block_remain=$(_remain "$rl_5h_reset")
-[ -n "$rl_7d_reset" ] && week_remain=$(_remain "$rl_7d_reset")
-# The OAuth usage API (reads credentials) is only consulted when stdin lacks a
-# window — older Claude Code, or before the session's first API response.
-if [ "$CCTREELINE_USAGE_GAUGES" = "1" ] && { [ -z "$block_pct" ] || [ -z "$week_pct" ]; }; then
+stdin_rl=0
+if jq -e '(.rate_limits.five_hour // .rate_limits.seven_day) != null' <<<"$input" >/dev/null 2>&1; then
+  stdin_rl=1; now_s=$(_epoch_now)
+  block_pct=$(jq -r '.rate_limits.five_hour.used_percentage // empty' <<<"$input")
+  week_pct=$(jq -r '.rate_limits.seven_day.used_percentage // empty' <<<"$input")
+  r=$(jq -r '.rate_limits.five_hour.resets_at // empty' <<<"$input")
+  [[ "$r" =~ ^[0-9]+$ ]] && block_remain=$(_remain $(( r - now_s )))
+  r=$(jq -r '.rate_limits.seven_day.resets_at // empty' <<<"$input")
+  [[ "$r" =~ ^[0-9]+$ ]] && week_remain=$(_remain $(( r - now_s )))
+fi
+if [ "$stdin_rl" = "0" ] && [ "$CCTREELINE_USAGE_GAUGES" = "1" ]; then
   # prefer cctreeline's own cache; optionally reuse claude-hud's if present
   hud_cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/claude-hud/.usage-cache.json"
   active_cache="$USAGE_CACHE"
@@ -437,16 +568,28 @@ if [ "$CCTREELINE_USAGE_GAUGES" = "1" ] && { [ -z "$block_pct" ] || [ -z "$week_
     nohup bash "$SELF" --refresh-usage >/dev/null 2>&1 & disown 2>/dev/null || true
   fi
   if [ -f "$active_cache" ] && jq empty "$active_cache" 2>/dev/null; then
-    if [ -z "$block_pct" ]; then
-      block_pct=$(jq -r '.data.fiveHour // empty' "$active_cache")
-      five_reset=$(jq -r '.data.fiveHourResetAt // empty' "$active_cache")
-      [ -n "$five_reset" ] && block_remain=$(_remain "$(_epoch_from_iso "$five_reset")")
+    block_pct=$(jq -r '.data.fiveHour // empty' "$active_cache")
+    week_pct=$(jq -r '.data.weeklyBindingPct // .data.sevenDay // empty' "$active_cache")
+    week_scope=$(jq -r '.data.weeklyBindingScope // "all"' "$active_cache")
+    five_reset=$(jq -r '.data.fiveHourResetAt // empty' "$active_cache")
+    week_reset=$(jq -r '.data.weeklyBindingResetAt // .data.sevenDayResetAt // empty' "$active_cache")
+    now_s=$(_epoch_now)
+    [ -n "$five_reset" ] && (( $(_epoch_from_iso "$five_reset") <= now_s )) && { block_pct=""; five_reset=""; }
+    [ -n "$week_reset" ] && (( $(_epoch_from_iso "$week_reset") <= now_s )) && { week_pct=""; week_reset=""; }
+    if [ -n "$five_reset" ]; then
+      diff=$(( $(_epoch_from_iso "$five_reset") - now_s ))
+      if (( diff > 0 )); then
+        if (( diff >= 3600 )); then h=$((diff/3600)); m=$(((diff%3600)/60)); block_remain="${h}h"; (( m>0 )) && block_remain="${h}h${m}m"
+        else block_remain="$((diff/60))m"; fi
+      fi
     fi
-    if [ -z "$week_pct" ]; then
-      week_pct=$(jq -r '.data.weeklyBindingPct // .data.sevenDay // empty' "$active_cache")
-      week_scope=$(jq -r '.data.weeklyBindingScope // "all"' "$active_cache")
-      week_reset=$(jq -r '.data.weeklyBindingResetAt // .data.sevenDayResetAt // empty' "$active_cache")
-      [ -n "$week_reset" ] && week_remain=$(_remain "$(_epoch_from_iso "$week_reset")")
+    if [ -n "$week_reset" ]; then
+      diff=$(( $(_epoch_from_iso "$week_reset") - now_s ))
+      if (( diff > 0 )); then
+        if (( diff >= 86400 )); then d=$((diff/86400)); h=$(((diff%86400)/3600)); week_remain="${d}d"; (( h>0 )) && week_remain="${d}d${h}h"
+        elif (( diff >= 3600 )); then h=$((diff/3600)); m=$(((diff%3600)/60)); week_remain="${h}h"; (( m>0 )) && week_remain="${h}h${m}m"
+        else week_remain="$((diff/60))m"; fi
+      fi
     fi
   fi
 fi
@@ -465,11 +608,93 @@ fi
 line1=""
 [ -n "$dur_disp" ] && line1+="${dur_disp} $majsep "
 line1+="$(bld)$(c $PATH_C)${short_cwd}$(rst)"
+[[ "$n_added" =~ ^[1-9][0-9]*$ ]] && line1+="$(c $DIM_C)+${n_added}dir$(rst)"
 [ -n "$branch_disp" ] && line1+=" $majsep $(c $GIT_C)${branch_disp}$(rst)${wt_marker}${git_marks}"
 [ -n "$model_short" ] && line1+=" $majsep $(bld)$(c $MODEL_C)${model_short}$(rst)"
+mode=""
+[ -n "$effort" ] && mode="$(c $WEEK_C)${effort}$(rst)"
+[ "$thinking_on" = "false" ] && mode+="${mode:+$(c $DIM_C)·$(rst)}$(c $DIM_C)nothink$(rst)"
+[ "$fast_on" = "true" ] && mode+="${mode:+$(c $DIM_C)·$(rst)}$(c $RATE_C)fast$(rst)"
+[ -n "$mode" ] && line1+=" $mode"
+[ -n "$agent_name" ] && line1+=" $majsep $(c $GIT_C)agent:${agent_name:0:20}$(rst)"
+acct=$(_account_label)
+if [ -n "$acct" ]; then
+  # The leading @ marks the segment as "who", but an email already carries one —
+  # a second would read as @user@host rather than as this statusline's marker.
+  acct_pfx="@"; case "$acct" in *@*) acct_pfx="" ;; esac
+  acct_disp="${acct:0:24}"
+  [ "${#acct}" -gt 24 ] && acct_disp="${acct:0:23}${G_ELLIP}"
+  line1+=" $majsep $(c $ACCT_C)${acct_pfx}${acct_disp}$(rst)"
+fi
 sess_id="$session_id"
 [ -z "$sess_id" ] && [ -n "$transcript_path" ] && sess_id=$(basename "$transcript_path" .jsonl)
-[ -n "$sess_id" ] && line1+=" $majsep $(c $DIM_C)id:${sess_id:0:15}$(rst)"
+if [ -n "$session_name" ]; then
+  sn="${session_name:0:24}"; [ "${#session_name}" -gt 24 ] && sn="${session_name:0:23}${G_ELLIP}"
+  line1+=" $majsep $(c $ACCT_C)${sn}$(rst)"
+  [ -n "$sess_id" ] && line1+=" $(c $DIM_C)${sess_id:0:8}$(rst)"
+elif [ -n "$sess_id" ]; then line1+=" $majsep $(c $DIM_C)id:${sess_id:0:15}$(rst)"; fi
+
+# ── one pass over the transcript ────────────────────────────────
+# The compaction count and the line-3 worktree scan both need this file, and
+# the dominant cost is not grep or jq but simply reading it: a 104MB transcript
+# that no longer fits in the page cache measured ~700ms per read here, so
+# scanning it twice doubled the entire render. One grep, one jq, three cheap
+# passes over the (much smaller) result.
+#
+# grep runs first for speed, not for the answer — it only narrows the file to
+# candidate lines. Both record shapes are then confirmed by jq, because either
+# literal string can appear inside ordinary message text (this comment would
+# match if it were in a transcript).
+#   C        — a compaction boundary
+#   E<TAB>p  — an explicit file edit
+#   B<TAB>p  — one absolute path token seen in a shell command
+compactions=""; edited=""; touched=""
+scan_cmp=0; scan_wt=0
+[ "$CCTREELINE_COMPACTIONS" != "0" ] && scan_cmp=1
+case "$CCTREELINE_WORKTREE_LINE" in
+  1)    [ -n "$git_top" ] && scan_wt=1 ;;
+  auto) [ -n "$git_top" ] && scan_wt=1 ;;
+esac
+if { [ "$scan_cmp" = "1" ] || [ "$scan_wt" = "1" ]; } \
+   && [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
+  scan_pat=""
+  [ "$scan_cmp" = "1" ] && scan_pat='"compact_boundary"'
+  if [ "$scan_wt" = "1" ]; then
+    if [ -n "$scan_pat" ]; then scan_pat="$scan_pat"'|"tool_use"'; else scan_pat='"tool_use"'; fi
+  fi
+  # jq emits the path tokens of a shell command rather than the command itself.
+  # Both cost the same inside jq, but the raw commands measured 3.1MB of output
+  # against 0.6MB of tokens for an identical path set, and everything downstream
+  # then walks a fifth of the data.
+  scan_out=$(grep -E "$scan_pat" "$transcript_path" 2>/dev/null | jq -r '
+    if (.type=="system" and .subtype=="compact_boundary") then "C"
+    elif .type=="assistant" then
+      ( .message.content[]? | select(.type=="tool_use")
+        | if (.name=="Edit" or .name=="Write" or .name=="MultiEdit" or .name=="NotebookEdit")
+          then "E\t" + (((.input.file_path // .input.notebook_path) // "") | tostring)
+          elif .name=="Bash"
+          then ( ((.input.command) // "") | tostring
+                 | [ scan("/[A-Za-z0-9._@+-]+(?:/[A-Za-z0-9._@+-]+)*") ][]
+                 | "B\t" + . )
+          else empty end )
+    else empty end' 2>/dev/null)
+
+  if [ "$scan_cmp" = "1" ]; then
+    n_compact=$(printf '%s\n' "$scan_out" | awk '$0=="C"{n++} END{print n+0}')
+    # Never compacted: say nothing rather than "cmp 0".
+    [ "$n_compact" != "0" ] && compactions="$n_compact"
+  fi
+  if [ "$scan_wt" = "1" ]; then
+    edited=$(printf '%s\n' "$scan_out" \
+      | awk 'substr($0,1,1)=="E" { p=substr($0,3); if (p != "") print p }' | sort -u)
+    # Bounded on purpose: the match below is O(worktrees x paths) in bash. 500
+    # unique paths is far past any real session's worktree spread; beyond it the
+    # extra paths add no new worktree.
+    touched=$(printf '%s\n' "$scan_out" \
+      | awk 'substr($0,1,1)=="B" { print substr($0,3) }' | sort -u | head -n 500)
+  fi
+  unset scan_out
+fi
 
 # ── compose line 2 ──────────────────────────────────────────────
 parts=()
@@ -477,6 +702,13 @@ if [ -n "$ctx_pct" ]; then
   parts+=("$(c $CTX_C)ctx$(rst) $(gauge "$ctx_pct" "$CTX_C") $(pct_text "$ctx_pct" $CTX_C)")
 elif (( unknown_ctx )); then
   parts+=("$(c $CTX_C)ctx$(rst) $(c $DIM_C)──────────$(rst) $(c $DIM_C)?$(rst)")
+fi
+if [ "$cache_warm" = "true" ] && [[ "$cache_exp" =~ ^[0-9]+$ ]]; then
+  cl=$(( cache_exp - $(_epoch_now) ))
+  if (( cl > 0 )); then parts+=("$(c $DIM_C)cache$(rst) $(c $CTX_C)$(_remain $cl)$(rst)")
+  else parts+=("$(c $DIM_C)cache$(rst) $(c $WARN_C)cold$(rst)"); fi
+elif [ "$cache_warm" = "false" ]; then
+  parts+=("$(c $DIM_C)cache$(rst) $(c $WARN_C)cold$(rst)")
 fi
 if [ "$CCTREELINE_DENSITY" = "full" ] && [ -n "$output_style" ] && [ "$output_style" != "default" ]; then
   parts+=("$(c $WEEK_C)${output_style}$(rst)")
@@ -493,6 +725,18 @@ if [ -n "$block_pct" ]; then
   rate_meta=""; [ -n "$block_remain" ] && rate_meta=" $(c $RATE_C)${block_remain}$(rst)"
   parts+=("$(c $RATE_C)5h-$(rst)$(pct_text "$bp_int" $RATE_C)$rate_meta")
 fi
+# Both of these are whole-session totals rather than live gauges, so they sit at
+# the end of the line and follow the documented compact contract (ctx + 5h only).
+if [ "$CCTREELINE_DENSITY" = "full" ] && [ -n "$compactions" ]; then
+  parts+=("$(c $DIM_C)cmp$(rst) $(c $WEEK_C)${compactions}$(rst)")
+fi
+if [ "$CCTREELINE_DENSITY" = "full" ] && [ "$CCTREELINE_COST" != "0" ] && [ -n "$cost_usd" ]; then
+  cost_disp=$(awk -v v="$cost_usd" 'BEGIN{ if (v+0 < 10) printf "%.2f", v; else printf "%.0f", v }')
+  # Same tag idiom as the weekly gauge's "7d·Opus" scope.
+  plan_tag=""; plan_name=$(_plan_label)
+  [ -n "$plan_name" ] && plan_tag="$(c $COST_C)${plan_name}·$(rst)"
+  [ -n "$cost_disp" ] && parts+=("${plan_tag}$(c $COST_C)\$${cost_disp}$(rst)")
+fi
 line2=""
 if [ ${#parts[@]} -gt 0 ]; then
   line2="${parts[0]}"; for ((i=1;i<${#parts[@]};i++)); do line2+=" $majsep ${parts[i]}"; done
@@ -507,6 +751,7 @@ case "$CCTREELINE_WORKTREE_LINE" in
   auto) [ -n "$git_top" ] && wt_enabled=1 ;;
 esac
 if [ "$wt_enabled" = "1" ] && [ -n "$git_top" ]; then
+  WT_CACHE=$(_wt_cache_for "$cwd")
   # async refresh worktree cache if stale (>120s)
   wt_needs=1
   if [ -f "$WT_CACHE" ]; then
@@ -517,17 +762,7 @@ if [ "$wt_enabled" = "1" ] && [ -n "$git_top" ]; then
   fi
   [ "$wt_needs" = "1" ] && { nohup bash "$SELF" --refresh-worktrees "$cwd" >/dev/null 2>&1 & disown 2>/dev/null || true; }
 
-  # edited file paths this session (Edit/Write/MultiEdit use file_path;
-  # NotebookEdit uses notebook_path)
-  edited=""
-  if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-    edited=$(jq -r '
-      select(.type=="assistant") | .message.content[]?
-      | select(.type=="tool_use")
-      | select(.name=="Edit" or .name=="Write" or .name=="MultiEdit" or .name=="NotebookEdit")
-      | (.input.file_path // .input.notebook_path) // empty' "$transcript_path" 2>/dev/null | sort -u)
-  fi
-  if [ -f "$WT_CACHE" ] && [ -n "$edited" ]; then
+  if [ -f "$WT_CACHE" ] && { [ -n "$edited" ] || [ -n "$touched" ]; }; then
     # canonicalize edited paths once (resolve symlinked prefixes; the file may
     # be gone after a delete, so resolve its directory and re-append basename)
     edited_real=""
@@ -545,6 +780,17 @@ if [ "$wt_enabled" = "1" ] && [ -n "$git_top" ]; then
         [ -z "$ep" ] && continue
         case "$ep" in "$wreal"/*|"$wreal") active=1; break ;; esac
       done <<<"$edited_real"
+      # Shell-command paths are matched raw against both the canonical and the
+      # recorded worktree path, and on a path boundary only, so a sibling
+      # worktree that merely shares a name prefix cannot claim the match.
+      if [ "$active" = "0" ] && [ -n "$touched" ]; then
+        while IFS= read -r tp; do
+          [ -z "$tp" ] && continue
+          case "$tp" in
+            "$wreal"/*|"$wreal"|"$wpath"/*|"$wpath") active=1; break ;;
+          esac
+        done <<<"$touched"
+      fi
       [ "$active" = "1" ] || continue
       pr_nums=""; has_pr=0
       while IFS= read -r num; do

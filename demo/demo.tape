@@ -14,7 +14,7 @@ Require git
 Set Shell bash
 Set Theme "Dracula"     # swap for "Catppuccin Mocha", "TokyoNight", etc. if you prefer
 Set FontSize 18
-Set Width 1040
+Set Width 1220
 Set Height 380
 Set Padding 28
 Set TypingSpeed 55ms
