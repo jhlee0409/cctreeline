@@ -94,11 +94,11 @@ say "${bold}Configuration${rst}"
 # so an unattended install never silently turns on credential reading.
 USAGE=0
 if [ "$CRED_OK" = "1" ] && [ "$HAS_CURL" = "1" ]; then
-  say "${dim}Usage gauges show your 5-hour and weekly rate-limit %.${rst}"
-  say "${dim}This reads your Claude credentials ($CRED_SRC) and calls api.anthropic.com.${rst}"
+  say "${dim}Claude Code 2.1+ already sends 5h/weekly limits to the statusline, so those show without this.${rst}"
+  say "${dim}This enables a fallback (older Claude Code, per-model weekly scope): reads your Claude credentials ($CRED_SRC) and calls api.anthropic.com.${rst}"
   q1_def="y"
   [ "$NONINTERACTIVE" = "1" ] && [ -z "$ENABLE_USAGE" ] && q1_def="n"
-  if ask_yn "Enable 5h / weekly usage gauges?" "$q1_def"; then USAGE=1; fi
+  if ask_yn "Enable the usage-API fallback for 5h / weekly gauges?" "$q1_def"; then USAGE=1; fi
 else
   warn "Skipping usage gauges (need credentials + curl)."
 fi
@@ -175,4 +175,4 @@ ok "wired into $SETTINGS"
 
 say ""
 ok "${bold}cctreeline installed.${rst} Open a new Claude Code session to see it."
-[ "$USAGE" = "0" ] && say "${dim}Usage gauges are off. Re-run install.sh after logging into Claude to enable.${rst}"
+[ "$USAGE" = "0" ] && say "${dim}Usage-API fallback is off; 5h/weekly still show from Claude Code 2.1+ stdin.${rst}"

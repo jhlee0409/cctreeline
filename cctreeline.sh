@@ -289,7 +289,18 @@ model=$(jq -r '.model.display_name // ""' <<<"$input")
 model_id=$(jq -r '.model.id // ""' <<<"$input")
 output_style=$(jq -r '.output_style.name // ""' <<<"$input")
 duration_ms=$(jq -r '.cost.total_duration_ms // empty' <<<"$input")
-exceeds_200k=$(jq -r '.exceeds_200k_tokens // false' <<<"$input")
+# Claude Code >= 2.1 sends these on stdin (absent/null early in a session or on
+# plans without rate limits) — prefer them over transcript parsing / the API.
+ctx_used_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
+ctx_size=$(jq -r '.context_window.context_window_size // empty' <<<"$input")
+rl_5h_pct=$(jq -r '.rate_limits.five_hour.used_percentage // empty' <<<"$input")
+rl_5h_reset=$(jq -r '.rate_limits.five_hour.resets_at // empty' <<<"$input")
+rl_7d_pct=$(jq -r '.rate_limits.seven_day.used_percentage // empty' <<<"$input")
+rl_7d_reset=$(jq -r '.rate_limits.seven_day.resets_at // empty' <<<"$input")
+_isnum() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
+_isint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+for _v in ctx_used_pct rl_5h_pct rl_7d_pct; do _isnum "${!_v}" || printf -v "$_v" ''; done
+for _v in ctx_size rl_5h_reset rl_7d_reset; do _isint "${!_v}" || printf -v "$_v" ''; done
 
 # ── path (repo-relative, middle-ellipsis) ───────────────────────
 # collapse $HOME to ~ only on a path boundary (so /Users/jackson ≠ ~son)
@@ -353,14 +364,24 @@ model_short="$model"
 case "$model" in *Opus*) model_short="Opus";; *Sonnet*) model_short="Sonnet";; *Haiku*) model_short="Haiku";; esac
 ver_num=$(grep -oE '[0-9]+\.[0-9]+' <<<"$model" | head -1)
 [ -n "$ver_num" ] && model_short="$model_short $ver_num"
+# window size: stdin context_window_size when present; otherwise guess from the
+# model name. (exceeds_200k_tokens is a fixed 200k threshold, not the window
+# size, so it is not used for this.)
 is_1m=0
-if [[ "$model" == *"1M"* ]] || [[ "$model_id" == *"1m"* ]] || [ "$exceeds_200k" = "true" ]; then
-  is_1m=1; model_short="$model_short $(c $WEEK_C)1M$(c $MODEL_C)"
+if [ -n "$ctx_size" ]; then
+  (( ctx_size >= 1000000 )) && is_1m=1
+elif [[ "$model" == *"1M"* ]] || [[ "$model_id" == *"1m"* ]]; then
+  is_1m=1
 fi
+(( is_1m )) && model_short="$model_short $(c $WEEK_C)1M$(c $MODEL_C)"
 
 # ── ctx % from transcript usage ─────────────────────────────────
 ctx_pct=""; unknown_ctx=0
-if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
+if [ -n "$ctx_used_pct" ]; then
+  ctx_pct=$(awk -v v="$ctx_used_pct" 'BEGIN{printf "%d", v+0.5}')
+  (( ctx_pct > 100 )) && ctx_pct=100
+elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
+  # fallback for Claude Code builds without context_window on stdin
   unknown_ctx=1; usage_json=""
   for nn in 500 2000; do
     usage_json=$(tail -n "$nn" "$transcript_path" 2>/dev/null \
@@ -376,14 +397,27 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
     # never feed transcript-derived values into $(( )) unvalidated
     for _v in in_tok cr_tok cc_tok; do [[ ${!_v} =~ ^[0-9]+$ ]] || printf -v "$_v" 0; done
     used=$(( in_tok + cr_tok + cc_tok ))
-    if (( is_1m )); then max=1000000; else max=200000; fi
+    if [ -n "$ctx_size" ] && (( ctx_size > 0 )); then max=$ctx_size
+    elif (( is_1m )); then max=1000000; else max=200000; fi
     ctx_pct=$(( used * 100 / max )); (( ctx_pct > 100 )) && ctx_pct=100
   fi
 fi
 
-# ── 5h / weekly from usage cache (optional, consent-gated) ──────
-block_pct=""; block_remain=""; week_pct=""; week_remain=""; week_scope="all"
-if [ "$CCTREELINE_USAGE_GAUGES" = "1" ]; then
+# ── 5h / weekly: stdin rate_limits first, usage-API cache as fallback ──
+# countdown text for a future epoch-seconds value ("" if past/invalid)
+_remain() {
+  local diff=$(( $1 - $(_epoch_now) )) d h m
+  (( diff > 0 )) || return 0
+  if   (( diff >= 86400 )); then d=$((diff/86400)); h=$(((diff%86400)/3600)); printf '%sd' "$d"; (( h>0 )) && printf '%sh' "$h"
+  elif (( diff >= 3600 ));  then h=$((diff/3600)); m=$(((diff%3600)/60)); printf '%sh' "$h"; (( m>0 )) && printf '%sm' "$m"
+  else printf '%sm' "$((diff/60))"; fi
+}
+block_pct="$rl_5h_pct"; block_remain=""; week_pct="$rl_7d_pct"; week_remain=""; week_scope="all"
+[ -n "$rl_5h_reset" ] && block_remain=$(_remain "$rl_5h_reset")
+[ -n "$rl_7d_reset" ] && week_remain=$(_remain "$rl_7d_reset")
+# The OAuth usage API (reads credentials) is only consulted when stdin lacks a
+# window — older Claude Code, or before the session's first API response.
+if [ "$CCTREELINE_USAGE_GAUGES" = "1" ] && { [ -z "$block_pct" ] || [ -z "$week_pct" ]; }; then
   # prefer cctreeline's own cache; optionally reuse claude-hud's if present
   hud_cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/claude-hud/.usage-cache.json"
   active_cache="$USAGE_CACHE"
@@ -403,26 +437,16 @@ if [ "$CCTREELINE_USAGE_GAUGES" = "1" ]; then
     nohup bash "$SELF" --refresh-usage >/dev/null 2>&1 & disown 2>/dev/null || true
   fi
   if [ -f "$active_cache" ] && jq empty "$active_cache" 2>/dev/null; then
-    block_pct=$(jq -r '.data.fiveHour // empty' "$active_cache")
-    week_pct=$(jq -r '.data.weeklyBindingPct // .data.sevenDay // empty' "$active_cache")
-    week_scope=$(jq -r '.data.weeklyBindingScope // "all"' "$active_cache")
-    five_reset=$(jq -r '.data.fiveHourResetAt // empty' "$active_cache")
-    week_reset=$(jq -r '.data.weeklyBindingResetAt // .data.sevenDayResetAt // empty' "$active_cache")
-    now_s=$(_epoch_now)
-    if [ -n "$five_reset" ]; then
-      diff=$(( $(_epoch_from_iso "$five_reset") - now_s ))
-      if (( diff > 0 )); then
-        if (( diff >= 3600 )); then h=$((diff/3600)); m=$(((diff%3600)/60)); block_remain="${h}h"; (( m>0 )) && block_remain="${h}h${m}m"
-        else block_remain="$((diff/60))m"; fi
-      fi
+    if [ -z "$block_pct" ]; then
+      block_pct=$(jq -r '.data.fiveHour // empty' "$active_cache")
+      five_reset=$(jq -r '.data.fiveHourResetAt // empty' "$active_cache")
+      [ -n "$five_reset" ] && block_remain=$(_remain "$(_epoch_from_iso "$five_reset")")
     fi
-    if [ -n "$week_reset" ]; then
-      diff=$(( $(_epoch_from_iso "$week_reset") - now_s ))
-      if (( diff > 0 )); then
-        if (( diff >= 86400 )); then d=$((diff/86400)); h=$(((diff%86400)/3600)); week_remain="${d}d"; (( h>0 )) && week_remain="${d}d${h}h"
-        elif (( diff >= 3600 )); then h=$((diff/3600)); m=$(((diff%3600)/60)); week_remain="${h}h"; (( m>0 )) && week_remain="${h}h${m}m"
-        else week_remain="$((diff/60))m"; fi
-      fi
+    if [ -z "$week_pct" ]; then
+      week_pct=$(jq -r '.data.weeklyBindingPct // .data.sevenDay // empty' "$active_cache")
+      week_scope=$(jq -r '.data.weeklyBindingScope // "all"' "$active_cache")
+      week_reset=$(jq -r '.data.weeklyBindingResetAt // .data.sevenDayResetAt // empty' "$active_cache")
+      [ -n "$week_reset" ] && week_remain=$(_remain "$(_epoch_from_iso "$week_reset")")
     fi
   fi
 fi

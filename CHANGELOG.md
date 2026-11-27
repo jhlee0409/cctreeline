@@ -5,6 +5,16 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- Follow the Claude Code 2.1 statusLine stdin schema:
+  - ctx gauge reads `context_window.used_percentage`; transcript parsing is now only a fallback.
+  - 1M badge comes from `context_window.context_window_size` (no longer guessed from the model name or `exceeds_200k_tokens`, which is a fixed 200k threshold). Fixes ctx showing ~5x too high on 1M models whose display name has no "1M" (e.g. `Opus 5.5`).
+  - 5h / weekly gauges read `rate_limits.five_hour` / `seven_day` (epoch-second `resets_at`). The OAuth usage API is called only when stdin lacks a window.
+- Installer Q1 now describes the usage API as a fallback.
+
+### Added
+- `tests/render_test.sh` with a recorded Claude Code 2.1.332 payload and the documented example; run in CI.
+
 ## [0.1.0] — 2026-06-26
 
 Initial release.

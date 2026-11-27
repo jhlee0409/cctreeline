@@ -1,0 +1,69 @@
+{
+  "session_id": "23203d9b-0000-0000-0000-000000000000",
+  "cwd": "/nonexistent-cctreeline",
+  "prompt_id": "7320a73c-5d34-4a9c-856f-a9d1f04d558d",
+  "effort": {
+    "level": "medium"
+  },
+  "session_name": "fixture",
+  "model": {
+    "id": "claude-opus-5-5",
+    "display_name": "Opus 5.5"
+  },
+  "workspace": {
+    "current_dir": "/nonexistent-cctreeline",
+    "project_dir": "/nonexistent-cctreeline",
+    "added_dirs": []
+  },
+  "version": "2.1.332",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 1.0078219,
+    "total_duration_ms": 289406,
+    "total_api_duration_ms": 168168,
+    "total_lines_added": 41,
+    "total_lines_removed": 1
+  },
+  "context_window": {
+    "total_input_tokens": 79590,
+    "total_output_tokens": 4,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 2,
+      "output_tokens": 4,
+      "cache_creation_input_tokens": 2115,
+      "cache_read_input_tokens": 77473
+    },
+    "used_percentage": 8,
+    "remaining_percentage": 92
+  },
+  "exceeds_200k_tokens": false,
+  "prompt_cache": {
+    "warm": true,
+    "caching_observed": true,
+    "ttl": "1h",
+    "expires_at": 1795684454,
+    "requests": 19,
+    "misses": 0,
+    "expected_rebuilds": 0,
+    "hit_ratio": 0.9576870175575994,
+    "cache_write_tokens": 51815,
+    "miss_recache_tokens": 0,
+    "last_miss_at": null,
+    "last_miss_cause": null,
+    "miss_causes": {},
+    "recache_tokens_if_cold": 77475
+  },
+  "fast_mode": false,
+  "thinking": {
+    "enabled": true
+  },
+  "rate_limits": {
+    "seven_day": {
+      "used_percentage": 82,
+      "resets_at": 1795701600
+    }
+  }
+}
