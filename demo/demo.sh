@@ -27,11 +27,20 @@ printf 'edit\n' >> "$repo/a.txt"                          # modified → ●
 printf 'edit\n' >> "$repo/b.txt"                          # modified → ●
 printf 'new\n'  >  "$repo/d.txt"; git -C "$repo" add d.txt # staged   → +
 
-# 2) seeded caches (generic) under an isolated XDG home
+# 2) an isolated HOME with a generic Claude account (the account + plan segments
+#    read ~/.claude.json; never let the demo show the real one)
+export HOME="$DEMO/home"; mkdir -p "$HOME"
+cat > "$HOME/.claude.json" <<'EOF'
+{"oauthAccount":{"emailAddress":"alice@example.com","billingType":"stripe_subscription","organizationRateLimitTier":"default_claude_max_20x"}}
+EOF
+
+# 3) seeded caches (generic) under an isolated XDG home
 mkdir -p "$DEMO/cache/cctreeline" "$DEMO/config/cctreeline"
 mkdir -p "$DEMO/wt-feature-auth/src" "$DEMO/wt-hotfix-payments/src"
 now=$(( $(date +%s) * 1000 ))
-cat > "$DEMO/cache/cctreeline/worktrees.json" <<EOF
+# worktree cache is per repository: worktrees-<basename>-<cksum of main repo path>.json
+WT_CACHE="$DEMO/cache/cctreeline/worktrees-myapp-$(printf '%s' "$repo" | cksum | awk '{print $1}').json"
+cat > "$WT_CACHE" <<EOF
 {"worktrees":[
  {"name":"myapp-feature-auth","slug":"feature-auth","branch":"feature-auth","path":"$DEMO/wt-feature-auth","prs":[142]},
  {"name":"myapp-hotfix-payments","slug":"hotfix-payments","branch":"hotfix-payments","path":"$DEMO/wt-hotfix-payments","prs":[143,144]}
@@ -46,18 +55,21 @@ CCTREELINE_DENSITY=full
 CCTREELINE_REUSE_HUD_CACHE=0
 EOF
 
-# 3) transcript: edits in BOTH worktrees this session (drives line 3)
+# 4) transcript: edits in BOTH worktrees this session (drives line 3)
 cat > "$DEMO/transcript.jsonl" <<EOF
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"$DEMO/wt-feature-auth/src/login.ts"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"$DEMO/wt-hotfix-payments/src/charge.ts"}}]}}
 EOF
 
-# 4) the JSON Claude Code 2.1+ feeds the statusline on stdin (generic values)
+# 5) the JSON Claude Code 2.1+ feeds the statusline on stdin (generic values)
 STDIN=$(jq -n --arg cwd "$repo" --arg tp "$DEMO/transcript.jsonl" \
-  --argjson r5 "$(epoch_in 11520)" --argjson r7 "$(epoch_in 183600)" '{
+  --argjson r5 "$(epoch_in 11520)" --argjson r7 "$(epoch_in 183600)" --argjson pc "$(epoch_in 2400)" '{
   workspace:{current_dir:$cwd}, transcript_path:$tp, session_id:"a1b2c3d4-e5f67890",
+  session_name:"auth-refactor",
   model:{id:"claude-opus-5-5", display_name:"Opus 5.5"}, output_style:{name:"default"},
-  cost:{total_duration_ms:740000},
+  effort:{level:"high"}, thinking:{enabled:true},
+  cost:{total_duration_ms:740000, total_cost_usd:3.12},
+  prompt_cache:{warm:true, expires_at:$pc},
   context_window:{context_window_size:1000000, used_percentage:31},
   rate_limits:{five_hour:{used_percentage:42, resets_at:$r5}, seven_day:{used_percentage:58, resets_at:$r7}}}')
 

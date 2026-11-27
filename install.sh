@@ -125,6 +125,18 @@ mkdir -p "$CONFIG_DIR" "$DATA_DIR"
 cp "$SRC_DIR/cctreeline.sh" "$INSTALLED"; chmod +x "$INSTALLED"
 ok "runtime → $INSTALLED"
 
+# Keys the installer doesn't ask about keep their current line on a re-install
+# (e.g. a hand-set CCTREELINE_PLAN=Ultra), else get the default.
+keep() { # key default
+  local line=""
+  [ -f "$CONFIG_FILE" ] && line=$(grep -E "^$1=" "$CONFIG_FILE" 2>/dev/null | tail -n 1)
+  if [ -n "$line" ]; then printf '%s\n' "$line"; else printf '%s=%s\n' "$1" "$2"; fi
+}
+KEPT="$(keep CCTREELINE_REUSE_HUD_CACHE auto)
+$(keep CCTREELINE_ACCOUNT auto)
+$(keep CCTREELINE_COST 1)
+$(keep CCTREELINE_COMPACTIONS 1)
+$(keep CCTREELINE_PLAN '""')"
 cat > "$CONFIG_FILE" <<EOF
 # cctreeline config — written by install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "install")
 # Re-run install.sh or edit by hand. Values: see README.
@@ -133,7 +145,7 @@ CCTREELINE_WORKTREE_LINE=$WTLINE
 CCTREELINE_COLOR=$COLOR
 CCTREELINE_GLYPHS=$GLYPHS
 CCTREELINE_DENSITY=$DENSITY
-CCTREELINE_REUSE_HUD_CACHE=auto
+$KEPT
 EOF
 ok "config  → $CONFIG_FILE"
 

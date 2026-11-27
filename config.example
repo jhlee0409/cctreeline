@@ -1,9 +1,10 @@
 # cctreeline config — copy to ${XDG_CONFIG_HOME:-~/.config}/cctreeline/config
 # or let install.sh write it for you. Shell key=value; sourced by cctreeline.sh.
 
-# Read Claude credentials + show 5h/weekly rate-limit gauges (1 = on, 0 = off).
-# When on, cctreeline reads your OAuth token (macOS Keychain or
-# ~/.claude/.credentials.json) and calls api.anthropic.com in the background.
+# Usage-API fallback for the 5h/weekly gauges (1 = on, 0 = off). Claude Code 2.1+
+# sends rate_limits on stdin, and then this is never used. Only when stdin has no
+# rate_limits does cctreeline read your OAuth token (macOS Keychain or
+# ~/.claude/.credentials.json) and call api.anthropic.com in the background.
 CCTREELINE_USAGE_GAUGES=1
 
 # Line 3: per-worktree open-PR overview, scoped to worktrees edited this session.
@@ -16,9 +17,24 @@ CCTREELINE_COLOR=auto
 # unicode (█ ░ ⎇ ⌂ ●) or ascii (# . * ^) for fonts without box-drawing glyphs.
 CCTREELINE_GLYPHS=unicode
 
-# full = ctx + weekly + 5h + output-style. compact = ctx + 5h only.
+# full = everything on line 2. compact = ctx + 5h only.
 CCTREELINE_DENSITY=full
 
 # auto = reuse claude-hud's usage cache if it exists (skips a duplicate API call).
 # 0 = always use cctreeline's own cache.
 CCTREELINE_REUSE_HUD_CACHE=auto
+
+# Signed-in Claude account on line 1, read from ~/.claude.json (no network).
+# auto = email local-part (@alice), email = full address, name, org, off.
+CCTREELINE_ACCOUNT=auto
+
+# Session cost so far on line 2 (1 = on, 0 = off). On a subscription it is the
+# API-price equivalent, tagged with your plan (Max20x·$3), not a bill.
+CCTREELINE_COST=1
+
+# How many times this session compacted, on line 2 (hidden while 0).
+CCTREELINE_COMPACTIONS=1
+
+# Plan tag in front of the cost. Empty = derive from ~/.claude.json; set a label
+# (e.g. Ultra) to override, or off to hide it.
+CCTREELINE_PLAN=""
